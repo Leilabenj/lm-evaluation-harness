@@ -1,3 +1,274 @@
+# Team ML212 
+
+## Step 2: Adding a New Model Backend with Schema-Based Responses
+
+This guide outlines the steps to add a new model backend to the lm-evaluation-harness that supports structured outputs (JSON Schema using Pydantic).
+
+### Overview
+
+We need to:
+1. Create a new model backend class that implements the `LM` interface
+2. Add support for schema-based responses (JSON Schema via Pydantic)
+3. Register the model so it can be used via CLI
+4. Test the implementation
+
+### Step-by-Step Implementation Plan
+
+#### Step 1: Understand the Model Interface
+
+**Location**: `lm_eval/api/model.py`
+
+The base `LM` class requires three abstract methods:
+- `loglikelihood(requests)` → Returns `list[tuple[float, bool]]` (logprob, is_greedy)
+- `loglikelihood_rolling(requests)` → Returns `list[float]` (logprob)
+- `generate_until(requests)` → Returns `list[str]` (generated text)
+
+**Key Files to Study**:
+- `lm_eval/models/huggingface.py` - Reference implementation for HuggingFace models
+- `lm_eval/models/dummy.py` - Minimal example implementation
+- `docs/model_guide.md` - Official guide for adding new models
+
+#### Step 2: Create the Model Backend File
+
+**Action**: Create a new file `lm_eval/models/meditron_lm.py`
+
+**Structure**:
+```python
+from lm_eval.api.model import TemplateLM  # or LM if starting from scratch
+from lm_eval.api.registry import register_model
+from typing import Optional
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from pydantic import BaseModel, ValidationError
+import json
+
+@register_model("meditron", "meditron-schema")
+class MeditronLM(TemplateLM):
+    """
+    Meditron model backend with support for structured outputs via JSON Schema.
+    """
+    
+    def __init__(
+        self,
+        pretrained: str,
+        response_schema: Optional[dict] = None,  # JSON Schema dict
+        schema_model: Optional[BaseModel] = None,  # Pydantic model class
+        **kwargs
+    ):
+        # Initialize model and tokenizer
+        # Store schema information
+        pass
+```
+
+#### Step 3: Implement Required Methods
+
+**3.1 Initialize Model and Tokenizer**
+- Load model using `AutoModelForCausalLM.from_pretrained()`
+- Load tokenizer using `AutoTokenizer.from_pretrained()`
+- Move model to appropriate device (CUDA/CPU)
+- Store schema information for validation
+
+**3.2 Implement `loglikelihood()`**
+- Tokenize context and continuation
+- Compute log probabilities using model forward pass
+- Return list of `(logprob, is_greedy)` tuples
+- Reference: See `huggingface.py` lines ~375-391 for pattern
+
+**3.3 Implement `loglikelihood_rolling()`**
+- Used for perplexity calculations
+- Process full text without truncation
+- Handle chunking for long sequences
+- Return list of log probabilities
+
+**3.4 Implement `generate_until()` with Schema Support**
+- Generate text from model
+- **NEW**: Parse generated text as JSON
+- **NEW**: Validate against Pydantic schema if provided
+- **NEW**: Handle validation errors (retry or return error message)
+- Return list of generated/validated strings
+
+**Example schema validation in `generate_until()`**:
+```python
+def generate_until(self, requests, disable_tqdm: bool = False):
+    results = []
+    for request in requests:
+        context, gen_kwargs = request.args
+        # Generate text
+        generated = self._generate_text(context, gen_kwargs)
+        
+        # If schema is provided, validate
+        if self.schema_model:
+            try:
+                # Try to extract JSON from generated text
+                json_str = self._extract_json(generated)
+                # Validate against Pydantic model
+                validated = self.schema_model.parse_raw(json_str)
+                results.append(validated.json())
+            except (json.JSONDecodeError, ValidationError) as e:
+                # Handle validation errors
+                results.append(f"ERROR: {str(e)}")
+        else:
+            results.append(generated)
+    return results
+```
+
+#### Step 4: Add Schema Support Utilities
+
+**Create helper methods**:
+- `_extract_json(text)`: Extract JSON from model output (may be wrapped in markdown, etc.)
+- `_validate_schema(json_str, schema_model)`: Validate JSON against Pydantic model
+- `_create_pydantic_model(schema_dict)`: Dynamically create Pydantic model from JSON Schema
+
+**Location**: Add as private methods in `MeditronLM` class
+
+**Dependencies to add**:
+- `pydantic` - For schema validation
+- `jsonschema` - For JSON Schema to Pydantic conversion (optional helper)
+
+#### Step 5: Register the Model
+
+**5.1 Add Registration Decorator**
+```python
+@register_model("meditron", "meditron-schema")
+class MeditronLM(TemplateLM):
+    ...
+```
+
+**5.2 Import in `__init__.py`**
+**Location**: `lm_eval/models/__init__.py`
+
+Add:
+```python
+from . import meditron_lm
+```
+
+#### Step 6: Add CLI Support for Schema Arguments
+
+**Location**: `lm_eval/__main__.py` (if needed for special handling)
+
+The `--model_args` flag should support:
+- `pretrained=OpenMeditron/Meditron3-8B`
+- `response_schema=/path/to/schema.json` (JSON Schema file)
+- `schema_model=MyPydanticModel` (if using pre-defined Pydantic models)
+
+**Example CLI usage**:
+```bash
+lm_eval --model meditron \
+    --model_args pretrained=OpenMeditron/Meditron3-8B,response_schema=schemas/medical_response.json \
+    --tasks hellaswag
+```
+
+#### Step 7: Create Schema Examples
+
+**Create example schemas**:
+- `schemas/medical_response.json` - Example JSON Schema for medical responses
+- `schemas/qa_response.json` - Example for Q&A tasks
+
+**Example JSON Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "answer": {"type": "string"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "sources": {"type": "array", "items": {"type": "string"}}
+  },
+  "required": ["answer", "confidence"]
+}
+```
+
+#### Step 8: Write Tests
+
+**Location**: `tests/models/test_meditron.py`
+
+**Test cases to implement**:
+1. Test model initialization
+2. Test `loglikelihood()` with sample requests
+3. Test `loglikelihood_rolling()` with sample text
+4. Test `generate_until()` without schema
+5. Test `generate_until()` with schema validation (valid JSON)
+6. Test `generate_until()` with schema validation (invalid JSON)
+7. Test schema parsing from various formats (markdown code blocks, plain JSON, etc.)
+
+**Reference**: See `tests/models/test_huggingface.py` for test patterns
+
+#### Step 9: Documentation
+
+**Update documentation**:
+- Add model to main README.md under "Model APIs and Inference Servers" table
+- Document schema argument usage
+- Add example usage in `docs/model_guide.md` or create `docs/meditron_model.md`
+
+### Implementation Checklist
+
+- [ ] Create `lm_eval/models/meditron_lm.py`
+- [ ] Implement `__init__()` with schema support
+- [ ] Implement `loglikelihood()`
+- [ ] Implement `loglikelihood_rolling()`
+- [ ] Implement `generate_until()` with schema validation
+- [ ] Add JSON extraction helper method
+- [ ] Add schema validation helper method
+- [ ] Register model with `@register_model()` decorator
+- [ ] Import model in `lm_eval/models/__init__.py`
+- [ ] Create example JSON Schema files
+- [ ] Write unit tests in `tests/models/test_meditron.py`
+- [ ] Test via CLI: `lm_eval --model meditron --tasks hellaswag`
+- [ ] Test with schema: `lm_eval --model meditron --model_args response_schema=...`
+- [ ] Update README.md with model documentation
+- [ ] Add example usage to docs
+
+### Key Files Reference
+
+| File | Purpose |
+|------|---------|
+| `lm_eval/api/model.py` | Base `LM` class interface |
+| `lm_eval/models/huggingface.py` | Reference implementation (1500+ lines) |
+| `lm_eval/models/dummy.py` | Minimal example (42 lines) |
+| `lm_eval/api/registry.py` | Model registration system |
+| `docs/model_guide.md` | Official model addition guide |
+| `lm_eval/__main__.py` | CLI argument parsing |
+
+### Dependencies to Install
+
+```bash
+pip install pydantic jsonschema
+```
+
+### Next Steps After Implementation
+
+1. Test with existing tasks (hellaswag, arc_easy, etc.)
+2. Create custom tasks that require structured outputs
+3. Benchmark schema validation performance impact
+4. Consider adding retry logic for invalid schema responses
+5. Add support for streaming structured outputs (if needed)
+
+### Resources
+
+- [Pydantic Documentation](https://docs.pydantic.dev/)
+- [JSON Schema to Pydantic](https://pydantic-docs.helpmanual.io/usage/models/#creating-models-from-json-schema)
+- [LM Evaluation Harness Model Guide](./docs/model_guide.md)
+- [HuggingFace Transformers Docs](https://huggingface.co/docs/transformers/)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Language Model Evaluation Harness
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10256836.svg)](https://doi.org/10.5281/zenodo.10256836)
