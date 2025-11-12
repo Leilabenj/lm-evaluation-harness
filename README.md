@@ -1,5 +1,7 @@
 # Team ML212 
 
+Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
+
 ## Step 2: Adding a New Model Backend with Schema-Based Responses
 
 This guide outlines the steps to add a new model backend to the lm-evaluation-harness that supports structured outputs (JSON Schema using Pydantic).
