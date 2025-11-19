@@ -11,6 +11,13 @@ Fait :
 - J'ai ajouté lm-eval/models/schema_constrained_llm.py --> c'est ici qu'on implemente notre model. Deja mis toutes les abstract methods necessaire pour coherence avec LM.
 - Notre model herite de TemplateLM (pas besoin de gerer nous meme tout ce qui est tokenizer, log_likelihood aussi implemnté par TemplateLM).
 
+Rania :
+Fait (jusqu'au 19/11/25) :
+- Créé evaluate_basic_model.ipynb --> Notebook qui démontre comment évaluer un modèle de base avec le framework LM Evaluation Harness. Inclut setup, exploration des tâches, évaluation sur une ou plusieurs tâches, et analyse des résultats.
+- Créé lm-eval/models/sglang-schema.py --> Backbone pour la génération avec contraintes de schéma utilisant SGLang. Le modèle hérite de SGLangLM et ajoute le support pour outputs structurés via JSON Schema, validation Pydantic, extraction JSON. Enregistré avec @register_model("sglang-schema").
+
+Note : Il faut se mettre d'accord sur l'héritage à utiliser (TemplateLM vs SGLangLM) pour notre modèle de schéma contraint.
+
 
 ## Step-by-Step détaillé
 
