@@ -16,8 +16,29 @@ Fait (jusqu'au 19/11/25) :
 - Créé evaluate_basic_model.ipynb --> Notebook qui démontre comment évaluer un modèle de base avec le framework LM Evaluation Harness. Inclut setup, exploration des tâches, évaluation sur une ou plusieurs tâches, et analyse des résultats.
 - Créé lm-eval/models/sglang-schema.py --> Backbone pour la génération avec contraintes de schéma utilisant SGLang. Le modèle hérite de SGLangLM et ajoute le support pour outputs structurés via JSON Schema, validation Pydantic, extraction JSON. Enregistré avec @register_model("sglang-schema").
 
-Note : Il faut se mettre d'accord sur l'héritage à utiliser (TemplateLM vs SGLangLM) pour notre modèle de schéma contraint.
+!!! Note : Il faut se mettre d'accord sur l'héritage à utiliser (TemplateLM vs SGLangLM) pour notre modèle de schéma contraint.
 
+- J'ai aussi essayer de comprendre le role des 3 fonctions obligatoires pour le model. Je met mes notes en dessous pour que ca soit plus clair pour tout le monde.
+```
+LM (base class)
+├── loglikelihood()          → For multiple-choice and scoring tasks
+├── loglikelihood_rolling()  → For perplexity/language modeling tasks  
+└── generate_until()         → For text generation tasks
+```
+
+`loglikelihood(requests)`:Computes the **log probability** that the model would generate a specific continuation given a context.
+`loglikelihood_rolling(requests)`:Computes the **full log-likelihood** of an entire string/document, used for **perplexity** calculations. Unlike `loglikelihood()`, this doesn't have a separate context and continuation—it computes the probability of the entire text.
+`generate_until(requests)`: Generates text from the model until stopping criteria are met. This is used when you need the model to **produce new text**, not just score existing text.
+
+## Summary Table
+
+| Method | Purpose | Input | Output | Used For |
+|--------|---------|-------|--------|----------|
+| `loglikelihood()` | Score how likely a continuation is | `(context, continuation)` | `(logprob, is_greedy)` | Multiple-choice, ranking |
+| `loglikelihood_rolling()` | Score entire text/document | `(string,)` | `logprob` | Perplexity, language modeling |
+| `generate_until()` | Generate new text | `(context, gen_kwargs)` | `continuation` | Open-ended generation |
+
+---
 
 ## Step-by-Step détaillé
 
