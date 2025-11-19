@@ -2,6 +2,18 @@
 
 Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
+## Avancés de la team 
+
+Leila :
+Fait :
+- Checker lm-evaluation-harness/docs/ARCHITECTURE_SCHEMA_CONSTRAINED.md --> File qui décrit très bien chaque layer du modele, a quoi ils servent et d'ou ils proviennent. 
+- Checker aussi docs/model_guide.md qui explique comment ajouter un model au git. J'ai ajouté a coté des titres quand j'ai fait l'etape.
+- J'ai ajouté lm-eval/models/schema_constrained_llm.py --> c'est ici qu'on implemente notre model. Deja mis toutes les abstract methods necessaire pour coherence avec LM.
+- Notre model herite de TemplateLM (pas besoin de gerer nous meme tout ce qui est tokenizer, log_likelihood aussi implemnté par TemplateLM).
+
+
+## Step-by-Step détaillé
+
 ## Step 2: Adding a New Model Backend with Schema-Based Responses
 
 This guide outlines the steps to add a new model backend to the lm-evaluation-harness that supports structured outputs (JSON Schema using Pydantic).

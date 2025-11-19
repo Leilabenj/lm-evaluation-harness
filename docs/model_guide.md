@@ -4,7 +4,7 @@ This guide may be of special interest to users who are using the library outside
 
 In order to properly evaluate a given LM, we require implementation of a wrapper class subclassing the `lm_eval.api.model.LM` class, that defines how the Evaluation Harness should interface with your model. This guide walks through how to write this `LM` subclass via adding it to the library!
 
-## Setup
+## Setup  FAIT
 
 To get started contributing, go ahead and fork the main repo, clone it, create a branch with the name of your model, and install the project requirements in your environment:
 
@@ -24,7 +24,7 @@ touch lm_eval/models/<my_model_filename>.py
 
 **Tip: this filename should not shadow package names! For example, naming your file `anthropic.py` is disallowed since the API's name on pypi is `anthropic`, but naming it `anthropic_llms.py` works with no problems.**
 
-## Interface
+## Interface   FAIT
 
 All models must subclass the `lm_eval.api.model.LM` class.
 
@@ -83,7 +83,7 @@ LMs take in tokens in position `[0 1 2 ... N]` and output a probability distribu
 
 The final token of the target is not passed into the LM, because we want the LM's predictions *up to but not past* that final target token. For more information, check out https://github.com/EleutherAI/lm-evaluation-harness/issues/942 .
 
-## Registration
+## Registration   FAIT
 
 Congrats on implementing your model! Now it's time to test it out.
 
