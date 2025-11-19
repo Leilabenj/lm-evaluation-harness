@@ -4,12 +4,15 @@ Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
 ## Avancés de la team 
 
-Leila :
-Fait :
-- Checker lm-evaluation-harness/docs/ARCHITECTURE_SCHEMA_CONSTRAINED.md --> File qui décrit très bien chaque layer du modele, a quoi ils servent et d'ou ils proviennent. 
-- Checker aussi docs/model_guide.md qui explique comment ajouter un model au git. J'ai ajouté a coté des titres quand j'ai fait l'etape.
-- J'ai ajouté lm-eval/models/schema_constrained_llm.py --> c'est ici qu'on implemente notre model. Deja mis toutes les abstract methods necessaire pour coherence avec LM.
-- Notre model herite de TemplateLM (pas besoin de gerer nous meme tout ce qui est tokenizer, log_likelihood aussi implemnté par TemplateLM).
+Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
+
+Leila 19/11 :
+- Complété le model sglang_schema.
+- testé depuis evaluate_basic_model.ipynb (desolee jai ajoute une cell au milieu au lieu de a la fin je vais corriger ca demain)
+- test basic de la class SGLangSchemaLM pour verifier que chaque method fonctionne comme prevu (des sortes de unit_test rapide dans le notebook evaluate_basic_model.ipynb )
+
+TODO : Tester avec des vrais requets a meditron etc.. 
+
 
 
 ## Step-by-Step détaillé

@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "properties": {
+    "answer": {
+      "type": "string",
+      "description": "The answer to the question"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence score between 0 and 1"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Brief reasoning for the answer"
+    }
+  },
+  "required": [
+    "answer",
+    "confidence"
+  ]
+}
