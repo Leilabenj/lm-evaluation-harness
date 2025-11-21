@@ -11,12 +11,12 @@ Ismael - 21/11 :
 - j'ai run baseline sur les 3 benchmarks et voici les résultats :
 
 
-## Résultats Baseline — Meditron-3 8B (SGLang, RCP H100)
+### Résultats Baseline — Meditron-3 8B (SGLang, RCP H100)
 
 Ces résultats correspondent à l’évaluation du modèle **OpenMeditron/Meditron3-8B** via notre backend `sglang-schema` en **mode baseline** (sans contraintes de schéma).  
 Le serveur SGLang est lancé dans le pod GPU, et LM-Evaluation-Harness exécute les tâches depuis un second terminal.
 
-### Configuration
+#### Configuration
 - **Modèle :** `OpenMeditron/Meditron3-8B`  
 - **Backend :** SGLang (serveur HTTP + client)  
 - **GPU :** 1× H100 (RCP cluster)  
@@ -29,7 +29,7 @@ Le serveur SGLang est lancé dans le pod GPU, et LM-Evaluation-Harness exécute 
     --model_args pretrained=OpenMeditron/Meditron3-8B,base_url=http://localhost:31000 \
     --tasks <task> \
     --batch_size 1
-### Scores obtenus
+#### Scores obtenus
 
 | Benchmark            | Metric          | Score           | Stderr          |
 |----------------------|-----------------|-----------------|-----------------|
