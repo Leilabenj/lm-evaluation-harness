@@ -6,6 +6,38 @@ Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
 Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
 
+Ismael - 21/11 : 
+
+- j'ai run baseline sur les 3 benchmarks et voici les résultats :
+
+
+## Résultats Baseline — Meditron-3 8B (SGLang, RCP H100)
+
+Ces résultats correspondent à l’évaluation du modèle **OpenMeditron/Meditron3-8B** via notre backend `sglang-schema` en **mode baseline** (sans contraintes de schéma).  
+Le serveur SGLang est lancé dans le pod GPU, et LM-Evaluation-Harness exécute les tâches depuis un second terminal.
+
+### Configuration
+- **Modèle :** `OpenMeditron/Meditron3-8B`  
+- **Backend :** SGLang (serveur HTTP + client)  
+- **GPU :** 1× H100 (RCP cluster)  
+- **Batch size :** 1  
+- **Mode :** baseline (schéma désactivé)  
+- **Commande générale :**
+  ```bash
+  python3 -m lm_eval \
+    --model sglang-schema \
+    --model_args pretrained=OpenMeditron/Meditron3-8B,base_url=http://localhost:31000 \
+    --tasks <task> \
+    --batch_size 1
+### Scores obtenus
+
+| Benchmark            | Metric          | Score           | Stderr          |
+|----------------------|-----------------|-----------------|-----------------|
+| **MedQA (4 options)** | acc / acc_norm  | **0.6316**     | 0.0135          |
+| **PubMedQA**          | acc             | **0.752**      | 0.0193          |
+| **MedMCQA**           | acc / acc_norm  | **0.5953**     | 0.0076          |
+
+
 Ismael – 21/11 :
 - Déploiement complet de Meditron3-8B sur le cluster RCP via SGLang : installation des dépendances (sglang, transformers compatibles, flashinfer-cpu), authentification HuggingFace dans le pod, et lancement réussi du serveur HTTP SGLang (launch_server) sur GPU H100.
 - Intégration totale avec LM-Evaluation-Harness : installation du repo forké dans le pod, configuration du modèle sglang-schema avec base_url, et création d’un pipeline fonctionnel entre LM-Harness → backend custom → serveur SGLang → Meditron.
