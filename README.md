@@ -6,6 +6,13 @@ Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
 Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
 
+Ismael – 21/11 :
+- Déploiement complet de Meditron3-8B sur le cluster RCP via SGLang : installation des dépendances (sglang, transformers compatibles, flashinfer-cpu), authentification HuggingFace dans le pod, et lancement réussi du serveur HTTP SGLang (launch_server) sur GPU H100.
+- Intégration totale avec LM-Evaluation-Harness : installation du repo forké dans le pod, configuration du modèle sglang-schema avec base_url, et création d’un pipeline fonctionnel entre LM-Harness → backend custom → serveur SGLang → Meditron.
+- Première évaluation complète réussie !!! : exécution de Hellaswag sur Meditron3-8B via sglang-schema (--limit 10). Résultats obtenus et pipeline validé pour le mode baseline (sans schéma).
+- Le backend sglang-schema est maintenant correctement détecté, initialisé et utilisé par LM-Harness avec un serveur SGLang distant.
+- Prêt pour l’étape suivante : implémentation de la génération contrainte par schéma (extraction JSON, validation Pydantic, retry), puis lancements sur MedQA, PubMedQA et MedMCQA en mode baseline + schema.
+
 Leila 19/11 :
 - Complété le model sglang_schema.
 - testé depuis evaluate_basic_model.ipynb (desolee jai ajoute une cell au milieu au lieu de a la fin je vais corriger ca demain)

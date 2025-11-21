@@ -1,11 +1,8 @@
 import copy
-import io
 import json
 import logging
 import os
 import re
-from contextlib import redirect_stdout
-from importlib.util import find_spec
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, Union
 
 from tqdm import tqdm
@@ -45,22 +42,39 @@ if TYPE_CHECKING:
 @register_model("sglang-schema")
 class SGLangSchemaLM(SGLangLM):
     """
-    SGLang model backend with support for structured outputs via JSON Schema.
+    SGLang model backend with simplified support for structured outputs using Pydantic.
     
-    This class extends SGLangLM to add schema-constrained generation capabilities.
-    It supports:
-    - JSON Schema-based structured outputs via SGLang's native support
-    - Pydantic model validation for post-generation validation
-    - Automatic JSON extraction from model outputs (handles markdown code blocks, etc.)
-    - Error handling for invalid schema responses
+    This class extends SGLangLM to add schema-constrained generation capabilities using
+    SGLang's native structured output support and Pydantic's native methods.
+    
+    Key features:
+    - Direct Pydantic BaseModel support for schema definition
+    - Automatic JSON schema generation via model.model_json_schema()
+    - Native validation using model.model_validate_json()
+    - SGLang's structured output constraints during generation
+    - Simplified JSON extraction with fallback patterns
+    - Error handling and optional retry logic
+    
+    Recommended usage:
+        from pydantic import BaseModel, Field
+        
+        class MySchema(BaseModel):
+            name: str = Field(..., description="Name field")
+            age: int = Field(..., ge=0, description="Age field")
+        
+        model = SGLangSchemaLM(
+            pretrained="meta-llama/Llama-2-7b-chat-hf",
+            schema_model=MySchema
+        )
     """
     
     def __init__(
         self,
         pretrained: str,
-        # Schema-related arguments
+        # Schema-related arguments - simplified to use Pydantic model directly
+        schema_model: Optional[BaseModel] = None,  # Pydantic model class for validation and schema generation
+        # Legacy support for JSON schema (will be converted to Pydantic if needed)
         response_schema: Optional[Union[dict, str]] = None,  # JSON Schema dict or path to JSON file
-        schema_model: Optional[BaseModel] = None,  # Pydantic model class for validation
         schema_file: Optional[str] = None,  # Path to JSON Schema file
         # Schema validation options
         validate_with_pydantic: bool = True,  # Whether to validate with Pydantic after generation
@@ -78,9 +92,9 @@ class SGLangSchemaLM(SGLangLM):
         
         Args:
             pretrained: Model path or HuggingFace model identifier
-            response_schema: JSON Schema dict or path to JSON Schema file
-            schema_model: Pydantic BaseModel class for validation
-            schema_file: Path to JSON Schema file (alternative to response_schema)
+            schema_model: Pydantic BaseModel class for validation and schema generation (preferred)
+            response_schema: JSON Schema dict or path to JSON Schema file (legacy support)
+            schema_file: Path to JSON Schema file (legacy support)
             validate_with_pydantic: Enable Pydantic validation after generation
             retry_on_validation_error: Retry generation if validation fails
             max_retries: Maximum retry attempts
@@ -89,12 +103,52 @@ class SGLangSchemaLM(SGLangLM):
             json_pattern: Custom regex for JSON extraction
             **kwargs: All other arguments from SGLangLM parent class
         """
-        # Initialize parent SGLangLM class
-        super().__init__(pretrained=pretrained, **kwargs)
+
+        # Check if base_url is provided for remote API mode
+        self.base_url = kwargs.pop('base_url', None)
+        self.use_remote_api = self.base_url is not None
         
-        # Load and store schema information
-        self.response_schema = self._load_schema(response_schema, schema_file)
-        self.schema_model = schema_model
+        if self.use_remote_api:
+            # For remote API mode, we need to initialize the parent class differently
+            # to avoid creating a local engine. We'll do a minimal initialization.
+            
+            # Initialize TemplateLM directly instead of SGLangLM to avoid engine creation
+            from lm_eval.api.model import TemplateLM
+            TemplateLM.__init__(self)
+            
+            # Set required attributes that SGLangLM would normally set
+            self.think_end_token = kwargs.get('think_end_token', None)
+            self._max_length = kwargs.get('max_model_len') or kwargs.get('context_length')
+            self.tensor_parallel_size = int(kwargs.get('tp_size', 1))
+            self.data_parallel_size = int(kwargs.get('dp_size', 1))
+            self._max_gen_toks = kwargs.get('max_gen_toks', 256)
+            self.add_bos_token = kwargs.get('add_bos_token', False)
+            self.custom_prefix_token_id = kwargs.get('prefix_token_id', None)
+            
+            # Set batch size
+            batch_size = kwargs.get('batch_size', 1)
+            self.batch_size = (
+                "auto"
+                if isinstance(batch_size, str) and "auto" in batch_size
+                else int(batch_size)
+            )
+            
+            # For remote API mode, we don't need to create a model object
+            # We'll use HTTP requests directly in _model_generate
+            self.model = None  # Set to None to indicate remote mode
+            eval_logger.info(f"Using remote SGLang server at {self.base_url}")
+            
+            # Initialize tokenizer for remote mode
+            self._init_remote_tokenizer(pretrained, kwargs.get('trust_remote_code', True))
+        else:
+            # For local engine mode, proceed normally
+            if "device" not in kwargs or kwargs["device"] is None:
+                kwargs["device"] = "cuda"
+            
+            # Initialize parent SGLangLM class normally
+            super().__init__(pretrained=pretrained, **kwargs)
+        
+        # Store configuration
         self.validate_with_pydantic = validate_with_pydantic and (BaseModel is not None)
         self.retry_on_validation_error = retry_on_validation_error
         self.max_retries = max_retries
@@ -102,15 +156,151 @@ class SGLangSchemaLM(SGLangLM):
         self.extract_json_from_markdown = extract_json_from_markdown
         self.json_pattern = json_pattern
         
-        # Create Pydantic model from JSON Schema if schema provided but no model
-        if self.response_schema and not self.schema_model and self.validate_with_pydantic:
-            self.schema_model = self._create_pydantic_model_from_schema(self.response_schema)
+        # Simplified schema handling: prioritize Pydantic model
+        self.schema_model = schema_model
+        self.response_schema = None
         
-        # Log schema configuration
-        if self.response_schema:
-            eval_logger.info(f"Schema-constrained generation enabled with schema: {self.response_schema}")
         if self.schema_model:
-            eval_logger.info(f"Pydantic validation enabled with model: {self.schema_model.__name__}")
+            # Generate JSON schema from Pydantic model using native method
+            if hasattr(self.schema_model, 'model_json_schema'):
+                self.response_schema = self.schema_model.model_json_schema()
+                eval_logger.info(f"Generated JSON schema from Pydantic model: {self.schema_model.__name__}")
+            else:
+                eval_logger.error(f"Provided schema_model does not have model_json_schema() method")
+                self.schema_model = None
+        elif response_schema or schema_file:
+            # Legacy support: load JSON schema and try to create Pydantic model
+            eval_logger.warning(
+                "Using legacy JSON schema support. Consider using schema_model with Pydantic BaseModel instead."
+            )
+            self.response_schema = self._load_schema(response_schema, schema_file)
+            if self.response_schema and self.validate_with_pydantic:
+                self.schema_model = self._create_pydantic_model_from_schema(self.response_schema)
+        
+        # Log final configuration
+        if self.schema_model:
+            eval_logger.info(f"Schema-constrained generation enabled with Pydantic model: {self.schema_model.__name__}")
+        elif self.response_schema:
+            eval_logger.info(f"Schema-constrained generation enabled with JSON schema (no validation)")
+        else:
+            eval_logger.info("No schema provided - falling back to standard generation")
+
+    def _init_remote_tokenizer(self, pretrained: str, trust_remote_code: bool = True):
+        """Initialize tokenizer for remote API mode."""
+        try:
+            from lm_eval.utils import RemoteTokenizer, check_remote_tokenizer_support
+            if check_remote_tokenizer_support(self.base_url):
+                self.tokenizer = RemoteTokenizer(self.base_url)
+                eval_logger.info("Using remote tokenizer from SGLang server")
+            else:
+                # Fall back to HuggingFace tokenizer
+                from transformers import AutoTokenizer
+                self.tokenizer = AutoTokenizer.from_pretrained(pretrained, trust_remote_code=trust_remote_code)
+                eval_logger.info("Using local HuggingFace tokenizer as fallback")
+        except Exception as e:
+            eval_logger.warning(f"Failed to initialize remote tokenizer: {e}. Using HuggingFace tokenizer.")
+            from transformers import AutoTokenizer
+            self.tokenizer = AutoTokenizer.from_pretrained(pretrained, trust_remote_code=trust_remote_code)
+
+    @property
+    def eot_token_id(self):
+        """Override to handle remote tokenizer."""
+        if self.use_remote_api:
+            if hasattr(self.tokenizer, 'eos_token_id'):
+                return self.tokenizer.eos_token_id
+            elif hasattr(self.tokenizer, 'tokenizer_info'):
+                # For RemoteTokenizer
+                return self.tokenizer.tokenizer_info.get('eos_token_id')
+            else:
+                # Fallback
+                return getattr(self.tokenizer, 'eos_token_id', None)
+        else:
+            return super().eot_token_id
+
+    @property
+    def prefix_token_id(self):
+        """Override to handle remote mode."""
+        if self.use_remote_api:
+            if self.custom_prefix_token_id is not None:
+                return self.custom_prefix_token_id
+            if hasattr(self.tokenizer, 'bos_token_id') and self.tokenizer.bos_token_id is not None:
+                return self.tokenizer.bos_token_id
+            return self.eot_token_id
+        else:
+            return super().prefix_token_id
+
+    @property
+    def max_length(self):
+        """Override to handle remote mode."""
+        if self.use_remote_api:
+            if self._max_length:
+                return self._max_length
+            # For remote mode, use a reasonable default or try to get from tokenizer
+            if hasattr(self.tokenizer, 'model_max_length'):
+                return self.tokenizer.model_max_length
+            elif hasattr(self.tokenizer, 'tokenizer_info'):
+                return self.tokenizer.tokenizer_info.get('model_max_length', 2048)
+            else:
+                return 2048
+        else:
+            return super().max_length
+
+    @property
+    def max_gen_toks(self):
+        """Override to handle remote mode."""
+        if self.use_remote_api:
+            return self._max_gen_toks
+        else:
+            return super().max_gen_toks
+
+    def tok_encode(
+        self,
+        string: Union[str, List[str]],
+        left_truncate_len: int = None,
+        add_special_tokens: bool = False,
+        truncation: bool = False,
+    ) -> Union[List[int], List[List[int]]]:
+        """Override to handle remote tokenizer."""
+        if self.use_remote_api:
+            if not add_special_tokens:
+                add_special_tokens = False or self.add_bos_token
+            
+            if hasattr(self.tokenizer, '__call__'):
+                # For RemoteTokenizer or HuggingFace tokenizer
+                encoding = self.tokenizer(
+                    string,
+                    add_special_tokens=add_special_tokens,
+                    truncation=truncation,
+                    return_attention_mask=False,
+                ).input_ids
+            else:
+                # Fallback for other tokenizer types
+                if isinstance(string, str):
+                    encoding = self.tokenizer.encode(string, add_special_tokens=add_special_tokens)
+                else:
+                    encoding = [self.tokenizer.encode(s, add_special_tokens=add_special_tokens) for s in string]
+
+            # left-truncate the encoded context to be at most `left_truncate_len` tokens long
+            if left_truncate_len:
+                if not isinstance(string, str):
+                    encoding = [enc[-left_truncate_len:] for enc in encoding]
+                else:
+                    encoding = encoding[-left_truncate_len:]
+
+            return encoding
+        else:
+            return super().tok_encode(string, left_truncate_len, add_special_tokens, truncation)
+
+    def tok_decode(self, tokens: List[int]) -> str:
+        """Override to handle remote tokenizer."""
+        if self.use_remote_api:
+            if hasattr(self.tokenizer, 'decode'):
+                return self.tokenizer.decode(tokens)
+            else:
+                # Fallback
+                return str(tokens)
+        else:
+            return super().tok_decode(tokens)
 
     def _load_schema(
         self, 
@@ -201,164 +391,36 @@ class SGLangSchemaLM(SGLangLM):
 
     def _create_pydantic_model_from_schema(self, schema_dict: dict) -> Optional[BaseModel]:
         """
-        Dynamically create a Pydantic model from a JSON Schema dictionary.
+        Legacy method for creating Pydantic model from JSON Schema.
         
-        Uses datamodel-code-generator library to convert JSON Schema to Pydantic v2 models.
-        This handles complex cases like nested objects, arrays, enums, unions, etc.
+        Note: This method is deprecated in favor of using Pydantic models directly.
+        Consider defining your schema as a Pydantic BaseModel class instead of JSON Schema.
         
         Args:
             schema_dict: JSON Schema dictionary
             
         Returns:
-            Pydantic BaseModel class, or None if creation fails
-            
-        Note:
-            If this approach encounters problems (library not available, generation errors, etc.),
-            consider implementing a hybrid approach that falls back to manual schema-to-Pydantic
-            mapping for basic schemas.
+            None (not implemented in simplified version)
         """
-        if BaseModel is None:
-            eval_logger.error("Pydantic is not installed. Cannot create Pydantic model.")
-            return None
-        
-        try:
-            from datamodel_code_generator import InputFileType, generate
-        except ImportError:
-            eval_logger.error(
-                "datamodel-code-generator not installed. "
-                "Install with: pip install datamodel-code-generator"
-            )
-            return None
-        
-        try:
-            # Convert schema dict to JSON string
-            schema_json = json.dumps(schema_dict, indent=2)
-            
-            # Generate Pydantic v2 model code from JSON Schema
-            # Note: generate() writes to stdout, so we need to capture it
-            # Default output already generates Pydantic v2 compatible code
-            output_buffer = io.StringIO()
-            with redirect_stdout(output_buffer):
-                generate(
-                    schema_json,
-                    input_file_type=InputFileType.JsonSchema,
-                    # Additional options for better compatibility
-                    use_standard_collections=True,
-                    use_schema_description=True,
-                    use_field_description=True,
-                )
-            model_code = output_buffer.getvalue()
-            
-            if not model_code or not isinstance(model_code, str):
-                eval_logger.error(
-                    "Failed to generate model code from JSON Schema. "
-                    "generate() did not produce output."
-                )
-                return None
-            
-            # Execute the generated code in a new namespace
-            # This creates the model class(es) defined in the generated code
-            # We need to include __builtins__ and ensure all necessary imports are available
-            from typing import Optional, Union, List, Dict, Any, Tuple
-            namespace = {'__builtins__': __builtins__}
-            
-            # Add typing imports that generated code commonly uses
-            namespace.update({
-                'Optional': Optional,
-                'Union': Union,
-                'List': List,
-                'Dict': Dict,
-                'Any': Any,
-                'Tuple': Tuple,
-            })
-            
-            # Add Pydantic imports to namespace so generated code can use them
-            if BaseModel is not None:
-                try:
-                    from pydantic import confloat, conint, constr, conlist, conbytes, condate
-                    namespace.update({
-                        'BaseModel': BaseModel,
-                        'confloat': confloat,
-                        'conint': conint,
-                        'constr': constr,
-                        'conlist': conlist,
-                        'conbytes': conbytes,
-                        'condate': condate,
-                    })
-                except ImportError:
-                    namespace['BaseModel'] = BaseModel
-            
-            exec(model_code, namespace)
-            
-            # Find the BaseModel class in the namespace
-            # The generated model is typically named based on the schema's title,
-            # or defaults to "Model" or "Root" if no title is provided
-            model_class = None
-            
-            # Try common default names first
-            for name in ['Model', 'Root', 'RootModel', 'Schema']:
-                if name in namespace and isinstance(namespace[name], type) and issubclass(namespace[name], BaseModel):
-                    model_class = namespace[name]
-                    break
-            
-            # If not found, search for any BaseModel subclass
-            if model_class is None:
-                for name, obj in namespace.items():
-                    if (isinstance(obj, type) and 
-                        issubclass(obj, BaseModel) and 
-                        obj is not BaseModel):
-                        model_class = obj
-                        break
-            
-            if model_class is None:
-                eval_logger.error(
-                    "Could not find generated Pydantic model class in generated code. "
-                    "Generated code may not have created a model."
-                )
-                eval_logger.debug(f"Generated code namespace keys: {list(namespace.keys())}")
-                return None
-            
-            # Call model_rebuild() for Pydantic v2 compatibility
-            # This is required when using types like confloat, conint, etc. that have forward references
-            # According to Pydantic docs: https://errors.pydantic.dev/2.12/u/class-not-fully-defined
-            # The model needs to be rebuilt after all types (like confloat, Optional) are defined
-            # Since we've included all necessary types in the namespace, model_rebuild() should work
-            try:
-                if hasattr(model_class, 'model_rebuild'):
-                    # Force rebuild to resolve forward references (confloat, Optional, etc.)
-                    model_class.model_rebuild(force=True)
-            except Exception as e:
-                eval_logger.warning(
-                    f"Failed to rebuild Pydantic model (may still work): {e}"
-                )
-            
-            eval_logger.debug(
-                f"Successfully created Pydantic model '{model_class.__name__}' from JSON Schema"
-            )
-            return model_class
-            
-        except Exception as e:
-            eval_logger.error(
-                f"Failed to create Pydantic model from JSON Schema: {e}",
-                exc_info=True
-            )
-            # Note: If we encounter persistent problems with this library-based approach,
-            # we can implement a hybrid approach that:
-            # 1. Tries this library method first
-            # 2. Falls back to manual recursive schema-to-Pydantic mapping for basic schemas
-            # 3. Handles common cases (objects, arrays, primitives, enums) manually
-            # See the method docstring and comments for more details on fallback strategy.
-            return None
+        eval_logger.warning(
+            "Legacy JSON Schema to Pydantic conversion is no longer supported. "
+            "Please define your schema as a Pydantic BaseModel class directly. "
+            "Example:\n"
+            "from pydantic import BaseModel, Field\n"
+            "class MySchema(BaseModel):\n"
+            "    name: str = Field(..., description='Name field')\n"
+            "    age: int = Field(..., ge=0, description='Age field')\n"
+            "Then use: SGLangSchemaLM(schema_model=MySchema, ...)"
+        )
+        return None
 
     def _extract_json(self, text: str) -> Optional[str]:
         """
         Extract JSON string from model output.
         
-        Handles various formats:
-        - Plain JSON: {"key": "value"}
-        - Markdown code blocks: ```json\n{"key": "value"}\n```
-        - Text with JSON: Some text {"key": "value"} more text
-        - Custom patterns if json_pattern is provided
+        With SGLang's structured outputs, the model should return valid JSON directly.
+        This method provides fallback extraction for cases where the output includes
+        additional text or markdown formatting.
         
         Args:
             text: Raw model output text
@@ -369,23 +431,30 @@ class SGLangSchemaLM(SGLangLM):
         if not text or not isinstance(text, str):
             return None
         
-        # Try custom regex pattern first if provided
+        text = text.strip()
+        
+        # First, try to parse the text directly as JSON (most common case with structured outputs)
+        try:
+            json.loads(text)
+            return text
+        except json.JSONDecodeError:
+            pass
+        
+        # Try custom regex pattern if provided
         if self.json_pattern:
             try:
                 match = re.search(self.json_pattern, text, re.DOTALL)
                 if match:
                     extracted = match.group(1) if match.groups() else match.group(0)
-                    # Validate it's valid JSON
                     try:
                         json.loads(extracted)
                         return extracted
                     except json.JSONDecodeError:
-                        pass  # Continue to other methods
+                        pass
             except re.error as e:
                 eval_logger.warning(f"Invalid custom JSON pattern: {e}")
         
-        # Try extracting from markdown code blocks
-        # Pattern: ```json\n{...}\n``` or ```\n{...}\n```
+        # Try extracting from markdown code blocks (common fallback)
         markdown_patterns = [
             r'```json\s*\n(.*?)\n```',  # ```json\n...\n```
             r'```\s*\n(.*?)\n```',      # ```\n...\n``` (generic)
@@ -397,45 +466,13 @@ class SGLangSchemaLM(SGLangLM):
             match = re.search(pattern, text, re.DOTALL)
             if match:
                 extracted = match.group(1).strip()
-                # Validate it's valid JSON
                 try:
                     json.loads(extracted)
                     return extracted
                 except json.JSONDecodeError:
-                    continue  # Try next pattern
+                    continue
         
-        # Try finding JSON object/array in text using regex
-        # This is more complex - we need to find balanced braces/brackets
-        
-        # Pattern for JSON object: { ... }
-        # We'll try to find the first { and match it with the closing }
-        json_object_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-        
-        # Pattern for JSON array: [ ... ]
-        json_array_pattern = r'\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]'
-        
-        # Try JSON object first
-        for match in re.finditer(json_object_pattern, text, re.DOTALL):
-            extracted = match.group(0)
-            try:
-                # Validate it's valid JSON
-                json.loads(extracted)
-                return extracted
-            except json.JSONDecodeError:
-                continue
-        
-        # Try JSON array
-        for match in re.finditer(json_array_pattern, text, re.DOTALL):
-            extracted = match.group(0)
-            try:
-                # Validate it's valid JSON
-                json.loads(extracted)
-                return extracted
-            except json.JSONDecodeError:
-                continue
-        
-        # More robust approach: find balanced braces/brackets
-        # This handles nested structures better
+        # Simplified balanced brace/bracket finder for JSON objects and arrays
         def find_balanced_json(text: str, start_char: str, end_char: str) -> Optional[str]:
             """Find balanced JSON starting with start_char and ending with end_char."""
             start_idx = text.find(start_char)
@@ -467,7 +504,6 @@ class SGLangSchemaLM(SGLangLM):
                     elif char == end_char:
                         depth -= 1
                         if depth == 0:
-                            # Found balanced JSON
                             extracted = text[start_idx:i+1]
                             try:
                                 json.loads(extracted)
@@ -477,12 +513,11 @@ class SGLangSchemaLM(SGLangLM):
             
             return None
         
-        # Try finding JSON object with balanced braces
+        # Try finding JSON object or array
         json_obj = find_balanced_json(text, '{', '}')
         if json_obj:
             return json_obj
         
-        # Try finding JSON array with balanced brackets
         json_arr = find_balanced_json(text, '[', ']')
         if json_arr:
             return json_arr
@@ -496,7 +531,7 @@ class SGLangSchemaLM(SGLangLM):
         schema_model: Optional[BaseModel] = None
     ) -> Tuple[bool, Optional[BaseModel], Optional[str]]:
         """
-        Validate JSON string against Pydantic schema model.
+        Validate JSON string against Pydantic schema model using native model_validate_json().
         
         Args:
             json_str: JSON string to validate
@@ -521,17 +556,8 @@ class SGLangSchemaLM(SGLangLM):
             return (False, None, f"Provided schema_model is not a Pydantic BaseModel: {type(model_class)}")
         
         try:
-            # Parse JSON string to Python dict
-            try:
-                parsed_data = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                return (False, None, f"Invalid JSON format: {str(e)}")
-            
-            # Instantiate Pydantic model with parsed data
-            # This will validate the data against the schema
-            validated_model = model_class(**parsed_data)
-            
-            # Success - return the validated model instance
+            # Use Pydantic's native model_validate_json() method - much simpler!
+            validated_model = model_class.model_validate_json(json_str)
             return (True, validated_model, None)
             
         except ValidationError as e:
@@ -548,7 +574,7 @@ class SGLangSchemaLM(SGLangLM):
             return (False, None, f"Validation failed: {error_msg}")
             
         except Exception as e:
-            # Unexpected error during validation
+            # Unexpected error during validation (e.g., invalid JSON)
             eval_logger.error(
                 f"Unexpected error during Pydantic validation: {e}",
                 exc_info=True
@@ -559,13 +585,8 @@ class SGLangSchemaLM(SGLangLM):
         """
         Prepare schema parameters for SGLang's structured output generation.
         
-        SGLang supports structured outputs via its sampling parameters.
-        This method converts our JSON Schema to SGLang's expected format.
-        
-        According to SGLang documentation:
-        - JSON schema should be passed as a JSON string via 'json_schema' parameter
-        - The schema is used to constrain model output during generation
-        - Reference: https://docs.sglang.ai/advanced_features/structured_outputs.html
+        Uses the JSON schema generated from Pydantic model via model_json_schema().
+        SGLang expects the schema as a JSON string in the 'json_schema' parameter.
         
         Returns:
             Dictionary with SGLang schema parameters (e.g., {"json_schema": "..."}),
@@ -575,12 +596,11 @@ class SGLangSchemaLM(SGLangLM):
             return None
         
         try:
-            # Convert JSON Schema dict to JSON string
+            # Convert JSON Schema dict (generated from Pydantic) to JSON string
             # SGLang expects the schema as a JSON string in the json_schema parameter
             json_schema_string = json.dumps(self.response_schema)
             
             # Return SGLang sampling parameters with json_schema
-            # This will be merged into sampling_params in generate_until()
             return {"json_schema": json_schema_string}
             
         except (TypeError, ValueError) as e:
@@ -771,16 +791,9 @@ class SGLangSchemaLM(SGLangLM):
         
         if is_valid:
             # Validation succeeded - convert validated model back to JSON string
-            # This ensures the output is properly formatted and validated
+            # Use Pydantic's native model_dump_json() method
             try:
-                # Use Pydantic's model_dump_json() for Pydantic v2, or json() for v1
-                if hasattr(validated_model, 'model_dump_json'):
-                    validated_json_str = validated_model.model_dump_json()
-                elif hasattr(validated_model, 'json'):
-                    validated_json_str = validated_model.json()
-                else:
-                    # Fallback: convert to dict and then to JSON
-                    validated_json_str = json.dumps(validated_model.dict() if hasattr(validated_model, 'dict') else validated_model.__dict__)
+                validated_json_str = validated_model.model_dump_json()
                 return validated_json_str
             except Exception as e:
                 eval_logger.warning(
@@ -842,13 +855,8 @@ class SGLangSchemaLM(SGLangLM):
                     retry_is_valid, retry_validated_model, retry_error_msg = self._validate_schema(retry_json_str)
                     
                     if retry_is_valid:
-                        # Success! Return validated JSON
-                        if hasattr(retry_validated_model, 'model_dump_json'):
-                            return retry_validated_model.model_dump_json()
-                        elif hasattr(retry_validated_model, 'json'):
-                            return retry_validated_model.json()
-                        else:
-                            return json.dumps(retry_validated_model.dict() if hasattr(retry_validated_model, 'dict') else retry_validated_model.__dict__)
+                        # Success! Return validated JSON using native method
+                        return retry_validated_model.model_dump_json()
                     
                     # Validation still failed, continue to next retry
                     error_msg = retry_error_msg
@@ -879,6 +887,72 @@ class SGLangSchemaLM(SGLangLM):
                 f"Returning error message."
             )
             return f"Validation error: {error_msg}"
+
+    def _model_generate(
+        self,
+        requests: List[List[int]] = None,
+        generate: bool = False,
+        sampling_params: Union[List[Dict], Dict, None] = None,
+        return_logprob: bool = False,
+        top_logprobs_num: int = 1,
+        logprob_start_len: int = -1,
+    ):
+        """Override _model_generate to handle both local and remote modes."""
+        if self.use_remote_api:
+            # For remote API mode, use HTTP requests like sglang-generate model
+            import requests as http_requests
+            
+            if not generate:
+                sampling_params = sampling_params if sampling_params else {}
+                sampling_params.update({
+                    "temperature": 0,
+                    "max_new_tokens": 1,
+                })
+            if not isinstance(sampling_params, List):
+                sampling_params = [sampling_params] * len(requests)
+            
+            outputs = []
+            for request_tokens, sp in zip(requests, sampling_params):
+                # Create payload for SGLang server
+                payload = {
+                    "input_ids": request_tokens,
+                    "sampling_params": sp,
+                }
+                
+                if return_logprob:
+                    payload.update({
+                        "return_logprob": True,
+                        "top_logprobs_num": top_logprobs_num,
+                        "logprob_start_len": logprob_start_len,
+                    })
+                
+                try:
+                    # Make HTTP request to SGLang server
+                    response = http_requests.post(
+                        f"{self.base_url}/generate",
+                        json=payload,
+                        headers={"Content-Type": "application/json"},
+                        timeout=30
+                    )
+                    response.raise_for_status()
+                    output = response.json()
+                    outputs.append(output)
+                except Exception as e:
+                    eval_logger.error(f"Failed to make request to SGLang server: {e}")
+                    # Return a dummy output to avoid breaking the pipeline
+                    outputs.append({"text": "", "meta_info": {"input_token_logprobs": [], "input_top_logprobs": []}})
+            
+            return outputs
+        else:
+            # For local engine mode, use parent implementation
+            return super()._model_generate(
+                requests=requests,
+                generate=generate,
+                sampling_params=sampling_params,
+                return_logprob=return_logprob,
+                top_logprobs_num=top_logprobs_num,
+                logprob_start_len=logprob_start_len,
+            )
 
     @classmethod
     def create_from_arg_string(
