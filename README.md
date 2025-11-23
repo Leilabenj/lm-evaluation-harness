@@ -2,7 +2,7 @@
 
 Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
-## Avancés de la team 
+## Avancées de la team 
 
 Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
 
