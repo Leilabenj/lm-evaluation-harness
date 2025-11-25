@@ -21,7 +21,7 @@ Après avoir lancé un job (disons "meditron-basis"), dans un 1er pod (celui ouv
   
 Ensuite dans un 2eme pod (dans un nouveau terminal run ```runai bash meditron-basic```) :
 - ```cd /mloscratch/users/$GASPAR/lm-evaluation-harness```
-- run avec la task (benchmark) souhaitée :
+- run avec la task (benchmark) souhaitée (exemple de config) :
   ```bash
   python3 -m lm_eval \
   --model sglang-schema \
