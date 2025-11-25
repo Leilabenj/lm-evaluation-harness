@@ -6,6 +6,31 @@ Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
 Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
 
+Ismael : Tuto pour run sur le RCP
+
+Après avoir lancé un job (disons "meditron-basis"), dans un 1er pod (celui ouvert avec kubernetes dans votre editeur par ex) : 
+- se mettre dans le bon dossier à l'aide de ```cd /mloscratch/users/$GASPAR/lm-evaluation-harness```
+- puis installer les requirements (il faut le faire à chaque fois qu'on lance un nouveau pod) avec : ```pip install -e .``` et ```pip install sglang[all]```
+- et enfin lancer le serveur avec par exemple :
+  ```bash
+  python3 -m sglang.launch_server \
+    --model OpenMeditron/Meditron3-8B \
+    --dtype bfloat16 \
+    --tensor-parallel-size 1 \
+    --port 31000
+  
+Ensuite dans un 2eme pod (dans un nouveau terminal run ```runai bash meditron-basic```) :
+- ```cd /mloscratch/users/$GASPAR/lm-evaluation-harness```
+- run avec la task (benchmark) souhaitée :
+  ```bash
+  python3 -m lm_eval \
+  --model sglang-schema \
+  --model_args pretrained=OpenMeditron/Meditron3-8B,base_url=http://localhost:31000 \
+  --tasks ... \
+  --batch_size 1 \
+  --limit 10 
+
+
 Ismael - 21/11 : 
 
 - j'ai run baseline sur les 3 benchmarks et voici les résultats :
