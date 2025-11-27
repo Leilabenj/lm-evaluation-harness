@@ -6,6 +6,11 @@ Ismael Berrada, Leila Benjelloun, Rania Hatrouhou
 
 Avancée générale : Modele commencé dans lm-evaluation-harness/lm_eval/models/sglang_schema.py. Hérite de SGLangLM.
 
+Rania - 27/11/25 :
+- J'ai essayé de lancer l'évaluation de sglang_schema.py à la fois sans et avec contrainte de schéma.
+- Chez moi l'évaluation avec et sans contrainte pour PubMedQA et MedMCQA ont les mêmes résultats, ce qui me paraît étrange donc à investiguer.
+- J'ai essayé de simplifier les fonctions, mais je n'ai pas encore effectué tous les unit tests donc j'ai créé un fichier temporaire `sglang_schema_simpler.py` qu'il me reste à tester pour voir si ça fonctionnerait.
+
 Ismael : Tuto pour run sur le RCP
 
 Après avoir lancé un job (disons "meditron-basis"), dans un 1er pod (celui ouvert avec kubernetes dans votre editeur par ex) : 
